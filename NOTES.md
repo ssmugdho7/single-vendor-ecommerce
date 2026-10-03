@@ -91,6 +91,70 @@ Phase 4's `payments` shape.
   failed delivery attempt that should be re-attempted) — out of scope,
   same as the lack of a refund flow for payments.
 
+## Frontend architecture
+
+Built in one pass covering both the customer storefront and the admin
+panel (Next.js App Router, TanStack Query, shadcn/ui). Key decisions:
+
+- **Everything is client-rendered** (`"use client"` + TanStack Query),
+  including the public catalog — one consistent data-fetching pattern
+  end to end rather than mixing Server Components' `fetch()` with client
+  queries. Trade-off: no SSR/SEO benefit for the catalog, accepted for
+  this scope.
+- **Two independent auth spaces**, mirroring the backend's `/api/*` vs
+  `/api/admin/*` split: a `storefront_token` and an `admin_token`, each
+  in `localStorage` (not cookies — the backend uses Sanctum bearer
+  tokens, not session cookies). Built via one generic
+  `createAuthContext()` factory
+  (`frontend/src/lib/auth/create-auth-context.tsx`) instantiated twice
+  (`customer-auth.tsx`, `admin-auth.tsx`) — real reuse (identical
+  login/me/logout shape, different endpoints/storage key).
+- **One axios instance** (`frontend/src/lib/api-client.ts`) picks the
+  right token by checking whether the request path starts with
+  `/admin`, rather than maintaining two client instances. A 401
+  response clears that token and hard-redirects to the matching login
+  page.
+- **The fake-payment page lives on the frontend**, not the backend.
+  `FakePaymentGateway::initiate()` (backend) returns a `gateway_url`
+  pointing at a non-renderable API path; the frontend ignores it and
+  navigates to its own `/checkout/pay/[transaction]` page instead, which
+  calls the backend's existing `fake/{transaction}/pay|cancel` endpoints
+  directly. A real gateway integration would actually use `gateway_url`
+  for a true external redirect — this is exactly the seam where "fake"
+  and "real" differ, by design.
+- **The admin product edit form has no `stock_quantity` field.** The
+  backend's `UpdateProductRequest` still technically accepts one
+  (bypassing the Phase 3 ledger — see "Known limitations"), but the UI
+  only exposes stock changes through the dedicated stock-movements page,
+  so an admin can't silently desync the ledger through the edit screen.
+  The *create* form does include initial stock, since there's no prior
+  ledger entry to bypass for a product that doesn't exist yet.
+- **No react-hook-form/zod.** Forms are small (3-6 fields); plain
+  controlled inputs plus the backend's own 422 messages rendered inline
+  were enough, and this avoids adding dependencies beyond what Phase 0
+  already installed.
+- **shadcn's installed style (`base-nova`) is built on Base UI, not
+  Radix** — e.g. `Button` has no `asChild` prop, instead taking a
+  `render={<Link .../>}` prop for polymorphism. Also: Phase 0 had only
+  run `shadcn init` far enough to write `components.json`, never
+  actually generating the CSS theme tokens (`--primary`, `--border`,
+  etc.) into `globals.css` — every shadcn component would have rendered
+  unstyled until `shadcn init -d --force --yes` was re-run here to lay
+  those down.
+- Confirmed via `php artisan tinker` before relying on it: a
+  `DeliveryResource::make($this->whenLoaded('delivery'))` where the
+  `hasOne` relation is loaded-but-empty serializes as a clean JSON
+  `null`, not an all-null-fields object — so the frontend's
+  `delivery: Delivery | null` type and `if (order.delivery)` checks are
+  correct as written, no backend fix needed.
+- **No browser/e2e verification tool was available in this session.**
+  Verification was `npm run build` (type-checks + statically renders
+  every route), a real `Origin`-header `curl` check confirming CORS
+  actually works (not just assumed), and `curl`-based smoke tests
+  against every route for a 200 + absence of error markers with a real
+  backend running. This is not a substitute for clicking through the
+  app in an actual browser, which hasn't been done.
+
 ## Trade-offs
 *(to be filled in as decisions are made)*
 
@@ -206,6 +270,14 @@ has no stated requirement behind it.
 
 ## Known limitations
 
+- `App\Http\Requests\Admin\UpdateProductRequest` still technically
+  accepts a raw `stock_quantity` field (left over from Phase 1, before
+  the Phase 3 ledger existed) that would update the column directly,
+  bypassing `Product::adjustStock()` and the `stock_movements` audit
+  trail. The admin frontend's product edit form deliberately never
+  sends this field, but the backend itself doesn't enforce that — a
+  direct API call still could. Flagged, not fixed, since closing it is
+  a backend validation change outside a frontend-only pass.
 - Admin login returns the same generic validation error whether the
   password is wrong or the account exists but isn't an admin, to avoid
   leaking account existence — deliberate, not a bug.

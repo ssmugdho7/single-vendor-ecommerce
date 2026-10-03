@@ -2,9 +2,9 @@
 
 Laravel 13 + PostgreSQL API backend, Next.js storefront/admin frontend.
 
-> This README is being filled in as the project is built. See
-> `step_by_step_execution.md` for the full build log with commands and code,
-> and `NOTES.md` for architecture/decisions once those phases are complete.
+See `step_by_step_execution.md` for the full build log (commands and code,
+phase by phase) and `NOTES.md` for the architecture decisions and known
+limitations behind it.
 
 ## Stack
 
@@ -58,20 +58,40 @@ php artisan schedule:work
 
 ## 5. Frontend setup
 
+Run this alongside the backend (step 2) and a queue worker (step 3) — the
+frontend talks to the API at `NEXT_PUBLIC_API_URL` (defaults to
+`http://localhost:8000/api`) and needs the queue running for payment
+confirmation/delivery dispatch to actually happen.
+
 ```bash
 cd frontend
 cp .env.example .env.local
 npm install
-npm run dev
+npm run dev   # http://localhost:3000
 ```
+
+The storefront (`/`) and the admin panel (`/admin/login`) are separate
+login spaces — see "Seeder / factory data" below for the seeded admin
+account. Auth tokens are stored in the browser's `localStorage`
+(`storefront_token` / `admin_token`), not cookies.
 
 ## 6. Payment configuration
 
-*(documented once Phase 4 is built)*
+Payments go through a swappable gateway behind `PAYMENT_GATEWAY_DRIVER`
+(`backend/.env`, default `fake`) — no real credentials are required to
+exercise the full flow end to end: `POST /api/orders/{id}/pay` returns a
+`gateway_url`/`transaction_id`, and the frontend's
+`/checkout/pay/[transaction]` page calls the fake gateway's
+`pay`/`cancel` simulation endpoints directly. A real gateway (e.g.
+SSLCommerz) would be added as a new `PaymentGatewayContract`
+implementation plus real credentials — no controller/route changes.
 
 ## 7. CarryBee configuration
 
-*(documented once Phase 5 is built)*
+Deliveries work the same way, behind `DELIVERY_PROVIDER_DRIVER`
+(default `fake`). A successful payment automatically queues shipment
+creation; the fake provider's `/api/deliveries/fake/{tracking}/...`
+endpoints simulate CarryBee's webhook reporting transit/delivered/failed.
 
 ## 8. Running tests
 
@@ -86,5 +106,7 @@ php artisan test
 cd backend
 php artisan migrate:fresh --seed
 ```
-Seeds 1 admin, 30+ products, realistic inventory, and 100 orders spread over
-the last 3 weeks with internally-consistent stock/order-status data.
+Seeds one admin (`admin@example.com` / `password`), 8 categories, and 40
+products with randomized stock/pricing. Orders/payments/deliveries aren't
+seeded — create them by actually using the storefront (register → browse
+→ cart → checkout → pay → admin cancels/restocks as needed).

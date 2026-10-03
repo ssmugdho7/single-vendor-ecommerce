@@ -759,3 +759,140 @@ delivered`, visible identically from both the customer's own order
 view and the admin order view. Full suite:
 `php artisan test --compact` → 82 passed. `vendor/bin/pint --dirty
 --format agent` clean.
+
+## Phase 6 — Next.js frontend (storefront + admin, one pass)
+
+Scope: build the whole consumer-facing app against the now-complete
+backend — customer storefront (browse, auth, cart, checkout, payment
+simulation, order tracking) and admin panel (catalog CRUD, stock
+ledger, order management) — in one pass, client-side auth with the
+Sanctum token in `localStorage`, shadcn defaults for styling.
+
+### 6.1 Fixing the shadcn setup left incomplete in Phase 0
+
+Phase 0 ran `npx shadcn init -d --force --yes`, which wrote
+`components.json` but — it turns out — never actually generated the
+CSS theme tokens into `globals.css`. Running
+`npx shadcn@latest add button input label textarea select card table
+badge separator dialog alert-dialog sonner skeleton dropdown-menu
+checkbox --yes` happily created 15 component files referencing
+`bg-primary`, `border-input`, `bg-popover`, etc., none of which were
+defined anywhere — every one would have rendered unstyled. Re-running
+`npx shadcn@latest init -d --force --yes` (safe to re-run; it detected
+the existing config) regenerated `globals.css` with the full
+light/dark neutral palette (`--background`, `--primary`, `--border`,
+`--ring`, …) and created the missing `src/lib/utils.ts` (`cn` helper).
+
+**Discovered along the way**: this project's shadcn style
+(`base-nova`) is built on `@base-ui/react`, not Radix — functionally
+very similar (same `Root`/`Trigger`/`Content` component-composition
+pattern) but with one API difference that broke the build: `Button`
+has no `asChild` prop. Polymorphism instead uses a `render` prop:
+`<Button render={<Link href="/checkout">Proceed to checkout</Link>} />`
+rather than `<Button asChild><Link>...</Link></Button>`.
+
+### 6.2 Shared infrastructure
+
+- `frontend/.env.example` (new — a gap flagged all the way back in
+  Phase 1's initial exploration) + `.env.local`:
+  `NEXT_PUBLIC_API_URL=http://localhost:8000/api`.
+- `src/types/index.ts` — TS interfaces matching every API Resource
+  shape 1:1, plus a generic `Paginated<T>` for Laravel's paginator
+  shape.
+- `src/lib/api-client.ts` — one axios instance. Its request interceptor
+  picks `storefront_token` or `admin_token` from `localStorage` based
+  on whether the request path starts with `/admin`; its response
+  interceptor clears that token and hard-redirects to the matching
+  login page on a 401.
+- `src/lib/auth/create-auth-context.tsx` — a generic factory (token
+  storage, login/logout, "who am I" on mount) instantiated twice as
+  `customer-auth.tsx`/`admin-auth.tsx`, differing only in storage key
+  and endpoint paths.
+- `src/lib/query-client.tsx` — `QueryClientProvider` wrapper, mounted
+  in `src/app/layout.tsx` alongside shadcn's `<Toaster />` (sonner).
+- `src/components/pagination.tsx`, `src/components/status-badge.tsx` —
+  reused across every paginated list and every order/payment/delivery
+  status display, respectively.
+- `src/lib/form-errors.ts` — pulls Laravel's `{errors: {field: [...]}}`
+  422 shape out of an axios error for inline field display.
+
+**Gotcha**: `customer-auth.tsx`/`admin-auth.tsx` call the
+`createAuthContext()` factory at module scope to produce their
+exported `Provider`/`useAuth`. Since `create-auth-context.tsx` is
+marked `"use client"`, Next's RSC bundler treats every one of its
+exports as a client-only reference — calling one as a plain function
+from a module that *isn't itself* marked `"use client"` (even though
+that module is only ever used by client code) fails the build:
+`Attempted to call createAuthContext() from the server but
+createAuthContext is on the client.` Fixed by adding `"use client"` to
+`customer-auth.tsx` and `admin-auth.tsx` too.
+
+### 6.3 Storefront (route group `(storefront)`, no URL prefix)
+
+`layout.tsx` wraps everything in `CustomerAuthProvider` + a `Navbar`
+(login state, cart item count via the shared `['cart']` query key).
+`page.tsx` **is** the product listing (no separate marketing
+homepage) — category filter and search synced to URL search params
+(`?category=&search=&page=`), so it's bookmarkable/shareable.
+`products/[slug]/page.tsx`, `cart/page.tsx`, `checkout/page.tsx`
+(shipping-address form + `POST /checkout`), `login/page.tsx`,
+`register/page.tsx`, `orders/page.tsx`, `orders/[id]/page.tsx` round
+out the flow. `checkout/pay/[transaction]/page.tsx` is the fake-gateway
+stand-in described in NOTES.md — "Simulate successful/failed payment"
+buttons calling the backend's fake endpoints directly, since the
+backend's own `gateway_url` points at a non-renderable API path.
+
+Pages using `useSearchParams()` (`page.tsx`, `login/page.tsx`,
+`orders/page.tsx`, `checkout/pay/[transaction]/page.tsx`) are wrapped
+in `<Suspense>` — required by Next's App Router for any component
+reading search params, or `next build` fails.
+
+### 6.4 Admin panel (`/admin/*`)
+
+`admin/layout.tsx` wraps everything in `AdminAuthProvider` +
+`AdminGuard` (redirects to `/admin/login` unless an admin token is
+present, skipping the redirect while already on that page) +
+`AdminSidebar`. `admin/page.tsx` is a plain `redirect("/admin/products")`.
+Categories and products each get a list page (table, delete via
+`alert-dialog` confirm) and a shared create/edit form component.
+
+The product form takes a `showStockQuantity` prop: `true` on
+`products/new` (there's no prior ledger entry to bypass for a product
+that doesn't exist yet), `false` on `products/[id]/edit` (stock changes
+only ever happen through `products/[id]/stock`, which mirrors
+`StoreStockMovementRequest`'s `type`/`quantity`/`new_quantity`/`note`
+shape and lists the movement history table alongside the form).
+`orders/page.tsx`/`orders/[id]/page.tsx` show every order
+(`user.name`/`email` attached, unlike the customer's own view) with a
+"Cancel order" action gated on `pending_payment`, matching the
+backend's own guard.
+
+### 6.5 Verification
+
+`npm run build` surfaced three real type errors on the first pass
+(the `asChild` issue above; a `string | null` vs `string | undefined`
+mismatch from Base UI's `Select` `onValueChange` callback; a removed
+`initialIsVisible` prop on a newer `ReactQueryDevtools`) — all fixed,
+then a clean, fully-static-where-possible 20-route build. `npm run
+lint` (`npx eslint .`) clean.
+
+Confirmed CORS actually works rather than assuming it — there's no
+`backend/config/cors.php` (Laravel 13's `HandleCors` middleware applies
+framework defaults without one), so a real
+`curl -H "Origin: http://localhost:3000" -I .../api/products` was run
+to check for `Access-Control-Allow-Origin` in the response, not just
+inferred from framework docs. Then, with `php artisan serve` and
+`npm run dev` running together, every route (static and dynamic, using
+real seeded IDs/slugs) was `curl`'d for a 200 and checked for
+error-overlay markers in the HTML.
+
+Also confirmed via `php artisan tinker` before relying on it:
+`DeliveryResource::make($this->whenLoaded('delivery'))` on a
+loaded-but-empty `hasOne` serializes as JSON `null`, not an
+all-null-fields object — so the frontend's `delivery: Delivery | null`
+typing and `if (order.delivery)` checks needed no defensive workaround.
+
+**No browser/e2e tool was available in this session** — the above is
+the most real verification these tools allow, but it is not a
+substitute for actually clicking through the app, which hasn't been
+done.
