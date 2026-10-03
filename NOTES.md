@@ -39,6 +39,15 @@ snapshotted at checkout time so later price changes don't rewrite history.
 `users` needed no changes — a customer is just a `User` row with
 `is_admin = false`, the column's existing default.
 
+**Phase 5 additions**: `orders` gained `recipient_name`,
+`recipient_phone`, `shipping_address` — a gap Phase 2 left open (no
+courier can deliver without an address, and none had been collected
+anywhere). Collected directly on the checkout request rather than a
+saved address book, since there's no multi-address requirement.
+`deliveries` (`order_id` unique FK — one shipment per order, `provider`,
+`tracking_id` unique, `status`, `raw_response` diagnostics) mirrors
+Phase 4's `payments` shape.
+
 ## Assumptions
 
 - Admin auth is Sanctum **token**-based (`Authorization: Bearer <token>`),
@@ -73,6 +82,14 @@ snapshotted at checkout time so later price changes don't rewrite history.
   it stays `pending_payment` so the customer can simply retry (a fresh
   `POST /orders/{id}/pay` creates a new `Payment` row; the failed one is
   left as a record, not deleted).
+- As of Phase 5, `orders.status` can also be `shipped`, `delivered`, or
+  `delivery_failed`. A shipment's `in_transit` state only updates
+  `Delivery.status` — `Order.status` stays `shipped` until a terminal
+  delivery outcome (`delivered`/`failed`) arrives; the granular
+  in-progress detail lives on `Delivery`, not duplicated onto `Order`.
+- There's no retry/re-dispatch for a `delivery_failed` order (e.g. a
+  failed delivery attempt that should be re-attempted) — out of scope,
+  same as the lack of a refund flow for payments.
 
 ## Trade-offs
 *(to be filled in as decisions are made)*
@@ -88,6 +105,14 @@ payment succeeds. Its `handle()` just logs — there's no mail provider
 configured — but it's a real queued job (`php artisan queue:work`
 processes it off Redis, not inline), so swapping the log line for a
 real `Mail::to(...)->send(...)` later is the only change needed.
+
+Phase 5 adds a second queued job on the same trigger:
+`App\Jobs\CreateDeliveryShipment`, dispatched right alongside
+`SendOrderConfirmation` in `PaymentService::handleCallback()`. Both
+jobs running off the same successful-payment event is deliberate —
+notifying the customer and booking the courier are independent
+side effects that shouldn't block each other or the payment response
+itself.
 
 ## Payment and CarryBee integration
 
@@ -122,7 +147,28 @@ integration would likely still route both through the same
 `PaymentService::handleCallback()`, just from two different routes
 with different payload shapes.
 
-**Phase 5 — CarryBee (delivery)**: not yet started.
+**Phase 5 — CarryBee (delivery).** Same shape as Phase 4, deliberately:
+`App\Contracts\DeliveryProviderContract` has `createShipment(Order):
+array` and `verify(array $payload): array`, mirroring
+`PaymentGatewayContract`'s `initiate`/`verify`, with an
+`App\DeliveryProviders\FakeDeliveryProvider` standing in for real
+CarryBee credentials. `App\Services\DeliveryService` is the single
+mutation point (mirrors `Product::adjustStock()` and
+`PaymentService::handleCallback()`): `createShipment()` is idempotent
+by querying `deliveries` directly for an existing row rather than
+trusting `$order->delivery` — a retried queue job can reuse the same
+in-memory `Order` instance, whose cached relation would still read
+stale (null) from before the first run created the row. (This was a
+real bug caught by a test that ran the job twice against the same
+`Order` object — worth remembering as a general caution against
+trusting a cached Eloquent relation across a method that just wrote to
+it.) `handleStatusUpdate()` is a no-op once the delivery is in a
+terminal state (`delivered`/`failed`), same idempotency rationale as
+payments.
+
+Triggered automatically: `PaymentService::handleCallback()` dispatches
+`CreateDeliveryShipment` alongside `SendOrderConfirmation` the moment
+an order is marked `paid` — no manual admin "dispatch" step.
 
 ## Inventory strategy
 

@@ -2,7 +2,9 @@
 
 namespace App\Providers;
 
+use App\Contracts\DeliveryProviderContract;
 use App\Contracts\PaymentGatewayContract;
+use App\DeliveryProviders\FakeDeliveryProvider;
 use App\PaymentGateways\FakePaymentGateway;
 use Illuminate\Support\ServiceProvider;
 
@@ -15,6 +17,10 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->bind(PaymentGatewayContract::class, match (config('services.payment.driver')) {
             default => FakePaymentGateway::class,
+        });
+
+        $this->app->bind(DeliveryProviderContract::class, match (config('services.delivery.driver')) {
+            default => FakeDeliveryProvider::class,
         });
     }
 

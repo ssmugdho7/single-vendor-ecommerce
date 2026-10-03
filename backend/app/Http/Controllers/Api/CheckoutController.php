@@ -3,19 +3,19 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\CheckoutRequest;
 use App\Http\Resources\OrderResource;
 use App\Models\Cart;
 use App\Models\Order;
 use App\Models\Product;
 use App\StockMovementType;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class CheckoutController extends Controller
 {
-    public function store(Request $request): JsonResponse
+    public function store(CheckoutRequest $request): JsonResponse
     {
         $cart = Cart::forUser($request->user())->load('items');
 
@@ -25,7 +25,7 @@ class CheckoutController extends Controller
             ]);
         }
 
-        $order = DB::transaction(function () use ($cart) {
+        $order = DB::transaction(function () use ($cart, $request) {
             $products = Product::query()
                 ->whereIn('id', $cart->items->pluck('product_id'))
                 ->lockForUpdate()
@@ -51,6 +51,9 @@ class CheckoutController extends Controller
                 'total_amount' => $cart->items->sum(
                     fn ($item) => $item->quantity * $products[$item->product_id]->price
                 ),
+                'recipient_name' => $request->string('recipient_name'),
+                'recipient_phone' => $request->string('recipient_phone'),
+                'shipping_address' => $request->string('shipping_address'),
             ]);
 
             foreach ($cart->items as $item) {

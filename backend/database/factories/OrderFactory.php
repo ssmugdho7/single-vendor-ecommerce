@@ -22,6 +22,9 @@ class OrderFactory extends Factory
             'user_id' => User::factory(),
             'status' => 'pending_payment',
             'total_amount' => fake()->randomFloat(2, 10, 1000),
+            'recipient_name' => fake()->name(),
+            'recipient_phone' => fake()->phoneNumber(),
+            'shipping_address' => fake()->address(),
         ];
     }
 }

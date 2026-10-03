@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Contracts\PaymentGatewayContract;
+use App\Jobs\CreateDeliveryShipment;
 use App\Jobs\SendOrderConfirmation;
 use App\Models\Order;
 use App\Models\Payment;
@@ -64,6 +65,7 @@ class PaymentService
                 $payment->order->update(['status' => 'paid']);
 
                 SendOrderConfirmation::dispatch($payment->order);
+                CreateDeliveryShipment::dispatch($payment->order);
             }
 
             return $payment;

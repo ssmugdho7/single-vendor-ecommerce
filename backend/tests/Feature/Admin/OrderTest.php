@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Admin;
 
+use App\Models\Delivery;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Payment;
@@ -42,11 +43,13 @@ class OrderTest extends TestCase
         $customer = User::factory()->create(['name' => 'Jane Doe']);
         $order = Order::factory()->create(['user_id' => $customer->id]);
         Payment::factory()->create(['order_id' => $order->id]);
+        Delivery::factory()->create(['order_id' => $order->id]);
 
         $this->getJson("/api/admin/orders/{$order->id}")
             ->assertOk()
             ->assertJsonPath('data.user.name', 'Jane Doe')
-            ->assertJsonCount(1, 'data.payments');
+            ->assertJsonCount(1, 'data.payments')
+            ->assertJsonPath('data.delivery.status', 'pickup_pending');
     }
 
     public function test_admin_can_cancel_a_pending_order_and_stock_is_restored(): void

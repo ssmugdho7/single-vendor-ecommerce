@@ -39,4 +39,8 @@ return [
         'driver' => env('PAYMENT_GATEWAY_DRIVER', 'fake'),
     ],
 
+    'delivery' => [
+        'driver' => env('DELIVERY_PROVIDER_DRIVER', 'fake'),
+    ],
+
 ];

@@ -632,3 +632,130 @@ shows `status: paid`; `php artisan queue:work --once` against the real
 Redis queue actually ran `SendOrderConfirmation` and logged the
 confirmation line. Full suite: `php artisan test --compact` → 73
 passed. `vendor/bin/pint --dirty --format agent` clean.
+
+## Phase 5 — CarryBee delivery integration
+
+Scope: close a gap Phase 2 left open (no shipping address was ever
+collected), then add a delivery flow mirroring Phase 4's payment flow
+almost exactly — a swappable courier contract with a fake driver,
+triggered automatically (queued) when an order is paid, with a
+`pickup_pending → in_transit → delivered/failed` lifecycle.
+
+### 5.1 Shipping address (prerequisite gap)
+
+```bash
+php artisan make:migration add_shipping_details_to_orders_table --no-interaction
+php artisan make:request CheckoutRequest --no-interaction
+```
+Added `recipient_name`, `recipient_phone`, `shipping_address` to
+`orders` and `Order::$fillable`. `CheckoutController::store()` now
+type-hints `CheckoutRequest` (previously a plain `Request` with no
+validation at all) requiring all three. `OrderFactory` got matching
+fake defaults so every existing factory-built order stays valid
+without every test needing to pass them explicitly.
+
+Updated `tests/Feature/CheckoutTest.php`'s existing requests to
+include a valid shipping payload (via a small `validShippingPayload()`
+helper) so they keep testing what they were testing — cart/stock logic
+— rather than incidentally 422ing on the newly-required fields; added
+one new test asserting the validation itself.
+
+### 5.2 `deliveries` + gateway abstraction
+
+```bash
+php artisan make:model Delivery -mf --no-interaction
+php artisan make:enum DeliveryStatus --no-interaction
+```
+`deliveries`: `order_id` (FK **unique** — one shipment per order,
+cascadeOnDelete), `provider`, `tracking_id` (unique), `status` (backed
+`App\DeliveryStatus`: `PickupPending`/`InTransit`/`Delivered`/`Failed`),
+`raw_response` (diagnostics only, not in `DeliveryResource`).
+`Delivery belongsTo Order`; `Order hasOne Delivery`.
+
+`App\Contracts\DeliveryProviderContract` deliberately mirrors
+`PaymentGatewayContract`'s shape — `createShipment(Order): array` and
+`verify(array): array` — since a courier aggregator's integration
+shape (get a tracking reference, later verify a status webhook) is
+structurally the same problem as a payment gateway's (get a
+transaction reference, later verify a payment webhook).
+`App\DeliveryProviders\FakeDeliveryProvider` generates a
+`CARRYBEE-{uuid}` tracking id; `verify()` passes through whatever
+status it's given. Bound in `AppServiceProvider::register()` via
+`config('services.delivery.driver')` (env `DELIVERY_PROVIDER_DRIVER`,
+default `fake`), same swap-later story as the payment gateway.
+
+### 5.3 Single mutation point + order status
+
+```bash
+php artisan make:job CreateDeliveryShipment --no-interaction
+```
+`App\Services\DeliveryService::createShipment(Order): Delivery` —
+idempotent, but **not** via `$order->delivery` (a cached relation that
+goes stale the moment this same method creates the row without
+updating that cache) — instead queries `Delivery::where('order_id',
+...)->first()` fresh each call. This was a real bug caught by
+`tests/Feature/DeliveryTest.php`'s "running the job twice" test: two
+job instances built from the *same* in-memory `$order` object (as
+happens when a test — or a queue worker reusing a job's deserialized
+payload across a retry — calls the job twice) both saw the stale
+`null`-cached relation and both tried to insert, hitting the `deliveries.order_id`
+unique constraint. Querying fresh avoids trusting a cache that the
+very same method invalidated.
+
+On success, sets `Order.status = 'shipped'`.
+`handleStatusUpdate(array): Delivery` mirrors
+`PaymentService::handleCallback()`: resolves the gateway, `verify()`s,
+locks the `Delivery` row, no-ops if already terminal
+(`Delivered`/`Failed`), otherwise updates `Delivery.status` and — only
+on a terminal outcome — `Order.status` (`delivered`/`delivery_failed`).
+`in_transit` updates `Delivery.status` only; `Order.status` stays
+`shipped` until a terminal outcome arrives, so the granular
+in-progress detail lives on `Delivery`, not duplicated onto `Order`.
+
+**Trigger**: `PaymentService::handleCallback()` now dispatches
+`CreateDeliveryShipment::dispatch($order)` right alongside
+`SendOrderConfirmation` — both fired as independent side effects of
+the same successful-payment event, no manual admin "dispatch" step.
+
+### 5.4 Controllers + routes
+
+```bash
+php artisan make:controller Api/DeliveryCallbackController --no-interaction
+php artisan make:controller Api/FakeDeliveryController --no-interaction
+```
+`POST /api/deliveries/callback` (public — a courier's webhook can't
+carry a Sanctum token) → `DeliveryService::handleStatusUpdate()`.
+`POST /api/deliveries/fake/{tracking}/{transit,deliver,fail}` (public)
+— what a test client calls to simulate CarryBee's webhook.
+
+### 5.5 Order/delivery visibility
+
+Added `recipient_name`, `recipient_phone`, `shipping_address`, and a
+`delivery` field (same `$this->when($this->relationLoaded('delivery'), ...)`
+conditional pattern as `user`/`payments`) to `OrderResource`, backed by
+a new `DeliveryResource`. Both `Api\OrderController` and
+`Api\Admin\OrderController` eager-load `delivery` alongside their
+existing eager-loads.
+
+### 5.6 Tests
+
+`tests/Feature/DeliveryTest.php` — a successful payment dispatches
+`CreateDeliveryShipment`; running the job creates a `pickup_pending`
+`Delivery` and sets `Order.status = 'shipped'`; running it twice
+doesn't create a duplicate (the bug described in 5.3, fixed before
+this test was green). `tests/Feature/DeliveryCallbackTest.php` — fake
+`transit` updates `Delivery` only; fake `deliver`/`fail` set the
+matching terminal `Order.status`; a callback after a terminal state is
+a no-op; unknown `tracking_id` 404s. Extended
+`tests/Feature/Admin/OrderTest.php`'s "view any order" test to confirm
+`delivery` appears once loaded.
+
+Verified end-to-end with `php artisan serve` + `curl` +
+`php artisan queue:work`: checkout with a shipping address → pay →
+both queued jobs ran → order showed `status: shipped` with a
+`pickup_pending` delivery and a `success` payment → `POST
+/deliveries/fake/{tracking}/deliver` → order showed `status:
+delivered`, visible identically from both the customer's own order
+view and the admin order view. Full suite:
+`php artisan test --compact` → 82 passed. `vendor/bin/pint --dirty
+--format agent` clean.

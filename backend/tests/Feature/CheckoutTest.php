@@ -15,6 +15,18 @@ class CheckoutTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * @return array<string, string>
+     */
+    private function validShippingPayload(): array
+    {
+        return [
+            'recipient_name' => 'Jane Doe',
+            'recipient_phone' => '+8801700000000',
+            'shipping_address' => '123 Main Street, Dhaka',
+        ];
+    }
+
     public function test_guest_cannot_checkout(): void
     {
         $this->postJson('/api/checkout')->assertUnauthorized();
@@ -24,7 +36,16 @@ class CheckoutTest extends TestCase
     {
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/checkout')->assertUnprocessable();
+        $this->postJson('/api/checkout', $this->validShippingPayload())->assertUnprocessable();
+    }
+
+    public function test_checkout_requires_shipping_details(): void
+    {
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/checkout', [])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['recipient_name', 'recipient_phone', 'shipping_address']);
     }
 
     public function test_checkout_creates_an_order_and_decrements_stock(): void
@@ -35,11 +56,12 @@ class CheckoutTest extends TestCase
         $product = Product::factory()->create(['price' => 25, 'stock_quantity' => 10]);
         CartItem::factory()->create(['cart_id' => $cart->id, 'product_id' => $product->id, 'quantity' => 3]);
 
-        $response = $this->postJson('/api/checkout');
+        $response = $this->postJson('/api/checkout', $this->validShippingPayload());
 
         $response->assertCreated()
             ->assertJsonPath('data.status', 'pending_payment')
-            ->assertJsonPath('data.total_amount', 75);
+            ->assertJsonPath('data.total_amount', 75)
+            ->assertJsonPath('data.recipient_name', 'Jane Doe');
 
         $this->assertDatabaseHas('products', ['id' => $product->id, 'stock_quantity' => 7]);
         $this->assertDatabaseCount('cart_items', 0);
@@ -59,7 +81,7 @@ class CheckoutTest extends TestCase
         $product = Product::factory()->create(['stock_quantity' => 2]);
         CartItem::factory()->create(['cart_id' => $cart->id, 'product_id' => $product->id, 'quantity' => 5]);
 
-        $this->postJson('/api/checkout')->assertUnprocessable();
+        $this->postJson('/api/checkout', $this->validShippingPayload())->assertUnprocessable();
 
         $this->assertDatabaseCount('orders', 0);
         $this->assertDatabaseHas('products', ['id' => $product->id, 'stock_quantity' => 2]);

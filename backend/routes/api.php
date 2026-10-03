@@ -9,6 +9,8 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutController;
+use App\Http\Controllers\Api\DeliveryCallbackController;
+use App\Http\Controllers\Api\FakeDeliveryController;
 use App\Http\Controllers\Api\FakePaymentController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PaymentCallbackController;
@@ -27,6 +29,11 @@ Route::post('/login', [AuthController::class, 'login']);
 Route::post('/payments/callback', [PaymentCallbackController::class, 'handle']);
 Route::post('/payments/fake/{transaction}/pay', [FakePaymentController::class, 'pay']);
 Route::post('/payments/fake/{transaction}/cancel', [FakePaymentController::class, 'cancel']);
+
+Route::post('/deliveries/callback', [DeliveryCallbackController::class, 'handle']);
+Route::post('/deliveries/fake/{tracking}/transit', [FakeDeliveryController::class, 'transit']);
+Route::post('/deliveries/fake/{tracking}/deliver', [FakeDeliveryController::class, 'deliver']);
+Route::post('/deliveries/fake/{tracking}/fail', [FakeDeliveryController::class, 'fail']);
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
