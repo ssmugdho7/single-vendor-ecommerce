@@ -12,7 +12,7 @@ class OrderController extends Controller
 {
     public function index(Request $request): AnonymousResourceCollection
     {
-        $orders = $request->user()->orders()->with('items.product.category')->latest()->paginate();
+        $orders = $request->user()->orders()->with(['items.product.category', 'payments'])->latest()->paginate();
 
         return OrderResource::collection($orders);
     }
@@ -21,6 +21,6 @@ class OrderController extends Controller
     {
         abort_unless($order->user_id === $request->user()->id, 404);
 
-        return OrderResource::make($order->load('items.product.category'));
+        return OrderResource::make($order->load(['items.product.category', 'payments']));
     }
 }

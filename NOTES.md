@@ -65,10 +65,14 @@ snapshotted at checkout time so later price changes don't rewrite history.
   if a product is later renamed, historical orders show the new name via
   the (still-linked) product relation. Only deletion is guarded against
   (via `nullOnDelete`), not renaming.
-- As of Phase 3, admins can list/view any order and cancel a
-  `pending_payment` one (restoring stock). There's still no status other
-  than `pending_payment`/`cancelled` — a `paid` transition and related
-  admin actions are deferred to Phase 4/5's payment integration.
+- As of Phase 4, `orders.status` can also be `paid`. Admin cancellation
+  (Phase 3) already only acts on `pending_payment`, so a `paid` order is
+  correctly left uncancellable by that action as-is — a refund flow
+  isn't built and isn't needed yet.
+- A payment that fails/is cancelled doesn't change the order's status —
+  it stays `pending_payment` so the customer can simply retry (a fresh
+  `POST /orders/{id}/pay` creates a new `Payment` row; the failed one is
+  left as a record, not deleted).
 
 ## Trade-offs
 *(to be filled in as decisions are made)*
@@ -77,10 +81,48 @@ snapshotted at checkout time so later price changes don't rewrite history.
 *(to be filled in as decisions are made)*
 
 ## Caching / queue / scheduler strategy
-*(to be filled in as each is introduced)*
+
+Phase 4 is the first thing to actually dispatch a job onto the Redis
+queue set up in Phase 0: `App\Jobs\SendOrderConfirmation`, fired when a
+payment succeeds. Its `handle()` just logs — there's no mail provider
+configured — but it's a real queued job (`php artisan queue:work`
+processes it off Redis, not inline), so swapping the log line for a
+real `Mail::to(...)->send(...)` later is the only change needed.
 
 ## Payment and CarryBee integration
-*(to be filled in during Phase 4/5)*
+
+**Phase 4 — payment.** Modeled on SSLCommerz (the standard Bangladeshi
+hosted-checkout gateway — a reasonable guess given CarryBee, a
+Bangladeshi courier aggregator, is already named for Phase 5), but
+implemented behind `App\Contracts\PaymentGatewayContract` with an
+`App\PaymentGateways\FakePaymentGateway` driver, since no real sandbox
+credentials were available. The contract has exactly two methods —
+`initiate(Order): array` (get a transaction id + a URL to send the
+customer to) and `verify(array $payload): array` (normalize a
+callback/IPN payload into a validity + status) — chosen to match the
+shape every hosted-checkout gateway needs regardless of vendor, so
+adding a real `SslcommerzPaymentGateway` later is a new class + the
+`PAYMENT_GATEWAY_DRIVER` env var, not a rewrite of
+`App\Services\PaymentService` or any controller.
+
+**Single mutation point**, same pattern as Phase 3's
+`Product::adjustStock()`: every payment-state change goes through
+`PaymentService::handleCallback()`, which is **idempotent** — a
+payment already resolved (not `pending`) short-circuits rather than
+re-applying. This matters because real gateways routinely deliver the
+same IPN more than once (retries on a slow 200 response, etc.), and
+without the guard a duplicate would double-dispatch the confirmation
+job.
+
+The browser-redirect and server-to-server IPN concepts collapse into
+one endpoint here (`POST /api/payments/callback`, public — a gateway
+can't carry a Sanctum token) since the fake driver has no real
+separate async delivery mechanism to simulate; a real gateway
+integration would likely still route both through the same
+`PaymentService::handleCallback()`, just from two different routes
+with different payload shapes.
+
+**Phase 5 — CarryBee (delivery)**: not yet started.
 
 ## Inventory strategy
 

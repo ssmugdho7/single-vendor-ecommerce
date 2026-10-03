@@ -4,6 +4,7 @@ namespace Tests\Feature\Admin;
 
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\Payment;
 use App\Models\Product;
 use App\Models\User;
 use App\StockMovementType;
@@ -40,10 +41,12 @@ class OrderTest extends TestCase
         Sanctum::actingAs(User::factory()->create(['is_admin' => true]));
         $customer = User::factory()->create(['name' => 'Jane Doe']);
         $order = Order::factory()->create(['user_id' => $customer->id]);
+        Payment::factory()->create(['order_id' => $order->id]);
 
         $this->getJson("/api/admin/orders/{$order->id}")
             ->assertOk()
-            ->assertJsonPath('data.user.name', 'Jane Doe');
+            ->assertJsonPath('data.user.name', 'Jane Doe')
+            ->assertJsonCount(1, 'data.payments');
     }
 
     public function test_admin_can_cancel_a_pending_order_and_stock_is_restored(): void

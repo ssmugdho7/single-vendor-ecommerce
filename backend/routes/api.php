@@ -9,7 +9,10 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutController;
+use App\Http\Controllers\Api\FakePaymentController;
 use App\Http\Controllers\Api\OrderController;
+use App\Http\Controllers\Api\PaymentCallbackController;
+use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\ProductController;
 use Illuminate\Support\Facades\Route;
 
@@ -20,6 +23,10 @@ Route::get('/products/{product:slug}', [ProductController::class, 'show']);
 
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
+
+Route::post('/payments/callback', [PaymentCallbackController::class, 'handle']);
+Route::post('/payments/fake/{transaction}/pay', [FakePaymentController::class, 'pay']);
+Route::post('/payments/fake/{transaction}/cancel', [FakePaymentController::class, 'cancel']);
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
@@ -33,6 +40,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/checkout', [CheckoutController::class, 'store']);
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/{order}', [OrderController::class, 'show']);
+    Route::post('/orders/{order}/pay', [PaymentController::class, 'store']);
 });
 
 Route::prefix('admin')->group(function () {

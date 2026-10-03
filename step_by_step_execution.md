@@ -521,3 +521,114 @@ cancels the order (`stock_quantity` restored, `cancellation` movement
 logged, order shows the customer's name). Full suite:
 `php artisan test --compact` → 64 passed. `vendor/bin/pint --dirty
 --format agent` clean.
+
+## Phase 4 — Payment integration
+
+Scope: a payment flow modeled on SSLCommerz's hosted-checkout shape,
+behind a swappable gateway contract with a fake driver (no real
+sandbox credentials available), plus a queued confirmation job so the
+Redis queue (set up in Phase 0, unused until now) actually runs
+something.
+
+### 4.1 `payments` + gateway abstraction
+
+```bash
+php artisan make:model Payment -mf --no-interaction
+php artisan make:enum PaymentStatus --no-interaction
+```
+`payments`: `order_id` (FK cascadeOnDelete), `gateway` (string),
+`transaction_id` (string, unique), `amount`, `status` (backed
+`App\PaymentStatus`: `Pending`/`Success`/`Failed`), `raw_response`
+(nullable json, the gateway's verification payload — diagnostics only,
+not exposed via `PaymentResource`). `Payment belongsTo Order`; `Order
+hasMany Payment` (a retried payment after a failure gets a new row).
+
+`App\Contracts\PaymentGatewayContract` — two methods every
+hosted-checkout gateway needs regardless of vendor: `initiate(Order):
+array` (a transaction id + where to send the customer) and
+`verify(array $payload): array` (normalize a callback/IPN payload into
+a validity + status). `App\PaymentGateways\FakePaymentGateway`
+implements it by pointing `gateway_url` at this app's own
+`/api/payments/fake/{transaction}` simulation endpoints instead of a
+real external page, and `verify()` just passes through whatever
+status it's given (nothing to cryptographically check in a fake
+world). Bound in `AppServiceProvider::register()` via a `match` on
+`config('services.payment.driver')` (env `PAYMENT_GATEWAY_DRIVER`,
+default `fake`) — swapping in a real `SslcommerzPaymentGateway` later
+is a new class + a `match` arm + credentials, not a change to any
+controller or route.
+
+### 4.2 Single mutation point
+
+`App\Services\PaymentService` — same pattern as Phase 3's
+`Product::adjustStock()`:
+- `initiate(Order $order): array` — 422s unless the order is
+  `pending_payment`; creates a `pending` `Payment`, calls the gateway's
+  `initiate()`, returns the payment + `gateway_url`.
+- `handleCallback(array $payload): Payment` — resolves the gateway,
+  `verify()`s the payload, looks up the `Payment` by `transaction_id`,
+  locks it (`lockForUpdate`), and **idempotently** updates it: if the
+  payment is no longer `pending` (already resolved by an earlier
+  call), it's a no-op — this matters because a real gateway can
+  deliver the same IPN more than once. On a valid success, also sets
+  `Order.status = 'paid'` and dispatches
+  `SendOrderConfirmation::dispatch($order)`. All inside
+  `DB::transaction()`.
+
+### 4.3 Controllers + routes
+
+```bash
+php artisan make:controller Api/PaymentController --no-interaction
+php artisan make:controller Api/PaymentCallbackController --no-interaction
+php artisan make:controller Api/FakePaymentController --no-interaction
+php artisan make:job SendOrderConfirmation --no-interaction
+```
+- `POST /api/orders/{order}/pay` (`auth:sanctum`, 404 unless the order
+  belongs to the authenticated user) → `PaymentController@store` →
+  `PaymentService::initiate()`.
+- `POST /api/payments/callback` (**public** — a gateway can't carry a
+  Sanctum token) → `PaymentCallbackController@handle` →
+  `PaymentService::handleCallback($request->all())`. Stands in for
+  both a real gateway's browser-redirect and server-to-server IPN,
+  which collapse into one endpoint here since the fake driver has no
+  separate async delivery mechanism to simulate.
+- `POST /api/payments/fake/{transaction}/pay` / `/cancel` (public) —
+  what a test client calls to simulate completing/abandoning the fake
+  hosted page; each just calls `PaymentService::handleCallback()`
+  directly with `status: 'success'`/`'failed'`.
+
+`App\Jobs\SendOrderConfirmation` (`ShouldQueue`) — `handle()` logs
+(`Log::info`) rather than sending real mail (no provider configured),
+but runs through the real Redis queue (`php artisan queue:work`), not
+inline — swapping the log line for `Mail::send()` later is the only
+change needed.
+
+### 4.4 Order/payment visibility
+
+Added a `payments` field to `OrderResource` using the same conditional
+pattern as Phase 3's `user` field
+(`$this->when($this->relationLoaded('payments'), ...)`) via a new
+`PaymentResource`. Both the customer-facing `Api\OrderController` and
+`Api\Admin\OrderController` now eager-load `payments` alongside their
+existing eager-loads.
+
+### 4.5 Tests
+
+`tests/Feature/{PaymentTest,PaymentCallbackTest}.php` — initiate
+happy path + ownership + status guards (can't pay for someone else's
+order, or one that's already paid/cancelled); fake pay/cancel mark the
+payment and order correctly and dispatch (or don't dispatch)
+`SendOrderConfirmation` (`Queue::fake()` + `assertPushed`/
+`assertNotPushed`); a duplicate callback for an already-resolved
+transaction is a no-op (job only dispatched once); unknown
+`transaction_id` 404s (`Payment::where(...)->firstOrFail()`). Extended
+`tests/Feature/Admin/OrderTest.php`'s "view any order" test to confirm
+`payments` appears once loaded.
+
+Verified end-to-end with `php artisan serve` + `curl`: customer checks
+out → `POST /orders/{id}/pay` (returns a `gateway_url` +
+`transaction_id`) → `POST /payments/fake/{transaction}/pay` → order
+shows `status: paid`; `php artisan queue:work --once` against the real
+Redis queue actually ran `SendOrderConfirmation` and logged the
+confirmation line. Full suite: `php artisan test --compact` → 73
+passed. `vendor/bin/pint --dirty --format agent` clean.

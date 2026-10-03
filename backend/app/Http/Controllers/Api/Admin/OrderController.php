@@ -14,14 +14,14 @@ class OrderController extends Controller
 {
     public function index(): AnonymousResourceCollection
     {
-        $orders = Order::query()->with(['user', 'items.product.category'])->latest()->paginate();
+        $orders = Order::query()->with(['user', 'items.product.category', 'payments'])->latest()->paginate();
 
         return OrderResource::collection($orders);
     }
 
     public function show(Order $order): OrderResource
     {
-        return OrderResource::make($order->load(['user', 'items.product.category']));
+        return OrderResource::make($order->load(['user', 'items.product.category', 'payments']));
     }
 
     public function cancel(Order $order): OrderResource
@@ -47,6 +47,6 @@ class OrderController extends Controller
             $order->update(['status' => 'cancelled']);
         });
 
-        return OrderResource::make($order->load(['user', 'items.product.category']));
+        return OrderResource::make($order->load(['user', 'items.product.category', 'payments']));
     }
 }
