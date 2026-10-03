@@ -27,7 +27,10 @@ class UpdateProductRequest extends FormRequest
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'price' => ['sometimes', 'required', 'numeric', 'min:0'],
-            'stock_quantity' => ['sometimes', 'required', 'integer', 'min:0'],
+            // stock_quantity is deliberately not updatable here — it must
+            // only ever change via Product::adjustStock() (see the admin
+            // stock-movements endpoint) so the stock_movements ledger can
+            // never drift from the counter.
             'is_active' => ['sometimes', 'boolean'],
             'image_path' => ['nullable', 'string'],
         ];

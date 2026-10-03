@@ -46,17 +46,7 @@ cd backend
 php artisan queue:work
 ```
 
-## 4. Scheduler
-
-Periodic tasks (e.g. polling delivery status) use Laravel's scheduler. In
-local development, run:
-
-```bash
-cd backend
-php artisan schedule:work
-```
-
-## 5. Frontend setup
+## 4. Frontend setup
 
 Run this alongside the backend (step 2) and a queue worker (step 3) — the
 frontend talks to the API at `NEXT_PUBLIC_API_URL` (defaults to
@@ -75,7 +65,7 @@ login spaces — see "Seeder / factory data" below for the seeded admin
 account. Auth tokens are stored in the browser's `localStorage`
 (`storefront_token` / `admin_token`), not cookies.
 
-## 6. Payment configuration
+## 5. Payment configuration
 
 Payments go through a swappable gateway behind `PAYMENT_GATEWAY_DRIVER`
 (`backend/.env`, default `fake`) — no real credentials are required to
@@ -86,21 +76,23 @@ exercise the full flow end to end: `POST /api/orders/{id}/pay` returns a
 SSLCommerz) would be added as a new `PaymentGatewayContract`
 implementation plus real credentials — no controller/route changes.
 
-## 7. CarryBee configuration
+## 6. CarryBee configuration
 
 Deliveries work the same way, behind `DELIVERY_PROVIDER_DRIVER`
 (default `fake`). A successful payment automatically queues shipment
 creation; the fake provider's `/api/deliveries/fake/{tracking}/...`
-endpoints simulate CarryBee's webhook reporting transit/delivered/failed.
+endpoints simulate CarryBee's webhook reporting transit/delivered/failed
+(the admin order detail page has buttons for this). Status updates
+arrive by webhook/push, not by polling — there's no scheduled job.
 
-## 8. Running tests
+## 7. Running tests
 
 ```bash
 cd backend
 php artisan test
 ```
 
-## 9. Seeder / factory data
+## 8. Seeder / factory data
 
 ```bash
 cd backend

@@ -1,36 +1,26 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Next.js (App Router) frontend for the single-vendor e-commerce project —
+see the repo root `README.md` for full setup instructions, and
+`../step_by_step_execution.md` / `../NOTES.md` for how this was built and why.
 
-## Getting Started
-
-First, run the development server:
+## Getting started
 
 ```bash
+cp .env.example .env.local
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Requires the Laravel API (`../backend`) running at `NEXT_PUBLIC_API_URL`
+(`.env.local`, defaults to `http://localhost:8000/api`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `src/app/(storefront)/*` — the customer-facing storefront (no URL
+  prefix): browsing, auth, cart, checkout, order tracking.
+- `src/app/admin/*` — the admin panel: catalog CRUD, stock adjustments,
+  order management.
+- `src/lib/auth/` — client-side Sanctum-token auth (see `NOTES.md`'s
+  "Frontend architecture" section for why there are two separate token
+  spaces).
+- `src/components/ui/` — shadcn/ui primitives (this project's style,
+  `base-nova`, is built on `@base-ui/react`, not Radix).

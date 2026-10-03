@@ -892,7 +892,120 @@ loaded-but-empty `hasOne` serializes as JSON `null`, not an
 all-null-fields object — so the frontend's `delivery: Delivery | null`
 typing and `if (order.delivery)` checks needed no defensive workaround.
 
-**No browser/e2e tool was available in this session** — the above is
-the most real verification these tools allow, but it is not a
-substitute for actually clicking through the app, which hasn't been
-done.
+At the time, no browser/e2e tool seemed available in this session, so
+the above curl/build-based verification was treated as the ceiling —
+see Phase 7, where that turned out to be wrong and real browser
+verification caught two actual bugs this approach had missed.
+
+## Phase 7 — Completion review (gap audit, stock-ledger fix, real browser verification)
+
+Prompted by "is the full project done, and review the docs." Scope:
+find anything actually incomplete (not just doc placeholders), close
+what's reasonable to close, and — this time — actually verify in a
+real browser instead of settling for `curl`/`npm run build`.
+
+### 7.1 Audit
+
+A forked review agent grepped the whole repo for TODO/FIXME/placeholder
+markers, read all three root docs end to end, cross-checked
+`routes/api.php` against `frontend/src/app`, and confirmed `git log`
+matched the docs. Findings: four `NOTES.md` sections still had
+placeholder text (Trade-offs, Performance decisions, Error handling,
+Production improvements); `README.md`'s "Scheduler" section described
+`Schedule::`-based polling for delivery status that was never built
+(delivery updates arrive by webhook/push, not polling — `grep -rn
+"Schedule::" app/ routes/` → zero hits); `frontend/README.md` was
+untouched `create-next-app` boilerplate that still said "start editing
+`app/page.tsx`," a file that no longer exists; and two *code* gaps:
+`UpdateProductRequest` still accepted a raw `stock_quantity` (bypassing
+the Phase 3 ledger — already flagged in Phase 6, now actually fixed),
+and there was no admin UI to ever advance a delivery past
+`pickup_pending` (the backend's `/api/deliveries/fake/{tracking}/...`
+endpoints existed from Phase 5 with nothing calling them).
+
+### 7.2 Closed the stock-ledger bypass
+
+Removed `'stock_quantity' => [...]` from
+`Admin\UpdateProductRequest::rules()` — since
+`ProductController::update()` does `$product->update($request->validated())`,
+dropping the key from `rules()` is sufficient; `validated()` only ever
+returns ruled keys. Added
+`test_updating_a_product_cannot_bypass_the_stock_ledger` asserting a
+`stock_quantity` in the update payload is silently ignored and no
+`stock_movements` row appears. 83 tests passing (was 82).
+
+### 7.3 Added the missing delivery-advance UI
+
+`frontend/src/app/admin/orders/[id]/page.tsx` gained an
+`advanceDelivery` mutation and conditional buttons — "Mark in
+transit"/"Mark failed" while `pickup_pending`, "Mark
+delivered"/"Mark failed" while `in_transit` — calling the existing
+`/api/deliveries/fake/{tracking}/{transit,deliver,fail}` endpoints
+directly, mirroring the fake-payment page's pattern. A short caption
+notes these simulate CarryBee's webhook.
+
+### 7.4 Real browser verification
+
+Checked whether a browser-automation tool actually existed in this
+session (the `run` skill's docs assume a `chromium-cli` tool). It
+doesn't — `npm view chromium-cli` returns an explicit "this package is
+a placeholder; if an AI agent suggested this name, it was likely
+hallucinated" warning. Installed `playwright` as a scratch tool
+(`npm install playwright --no-save` in `/tmp/browser-check`, outside
+the project — not a project dependency) and found Chromium already
+cached on the machine (`~/Library/Caches/ms-playwright`). Wrote a
+driver script covering, in one real headless-browser session against
+`php artisan serve` + `npm run dev` + a live `php artisan queue:work`:
+
+- **Customer**: register → browse → product detail → add to cart →
+  cart page → checkout form → place order → "Pay now" → simulated
+  payment success → watch the order reach `shipped` with a
+  `pickup_pending` delivery.
+- **Admin**: login → create a category → create a product (via the
+  category `<Select>`) → restock it (movement history updates) → open
+  the customer's order → advance delivery `pickup_pending` →
+  `in_transit` → `delivered` via the new buttons from 7.3.
+- **Customer again**: reload the same order, confirm `Delivered` is
+  visible.
+
+This caught two real bugs `npm run build`, `eslint`, and 82 passing
+backend tests had all missed:
+
+1. **Base UI `nativeButton` warning** on every `<Button render={<Link
+   .../>} />` (polymorphic button-as-link) — `Button` defaults to
+   `nativeButton: true`, which expects its `render` target to be an
+   actual `<button>` element; an anchor needs `nativeButton={false}`
+   explicitly. Fixed at all 6 call sites (`cart/page.tsx`,
+   `admin/categories/page.tsx` ×2, `admin/products/page.tsx` ×3) —
+   found via the dev server's "N Issue(s)" overlay badge visible in a
+   screenshot, traced to the actual warning text in `npm run dev`'s log.
+2. **Stale order status after simulated payment**:
+   `/checkout/pay/[transaction]/page.tsx` never invalidated the
+   `['order', id]`/`['orders']` TanStack Query cache after a payment
+   resolved, so navigating back to the order page could show a stale
+   `pending_payment` badge. Fixed by invalidating explicitly on
+   payment resolution, plus a `refetchInterval` (2s, only while
+   `status === 'paid'`) on both order detail pages — `shipped` depends
+   on a queued job finishing, not the payment request/response cycle,
+   so polling (briefly, and only in that one window) is the honest fix
+   rather than assuming the data is fresh.
+
+Both fixes are in the actual page components, not test-only
+workarounds. Re-ran the full walkthrough after fixing: zero console
+errors, every screenshot showing the expected state (`Shipped` →
+`Delivered` on both the customer and admin views, restocked quantity
+correct, movement history correct).
+
+### 7.5 Documentation
+
+Filled in `NOTES.md`'s four remaining placeholder sections (Trade-offs,
+Performance decisions, Error handling, Production improvements) with
+real content reflecting decisions actually made across all six phases.
+Corrected the stale "no browser tool available" claim once it turned
+out to be false. Fixed `README.md`'s scheduler section and rewrote
+`frontend/README.md` to describe the actual project instead of
+`create-next-app` boilerplate.
+
+Verified clean before finishing: `php artisan test --compact` → 83
+passed, `vendor/bin/pint --dirty --format agent` clean, `npm run
+build` + `npx eslint .` clean, full Playwright walkthrough clean.

@@ -56,7 +56,10 @@ function CategoriesContent() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Categories</h1>
-        <Button render={<Link href="/admin/categories/new">New category</Link>} />
+        <Button
+          nativeButton={false}
+          render={<Link href="/admin/categories/new">New category</Link>}
+        />
       </div>
 
       {isLoading ? (
@@ -84,6 +87,7 @@ function CategoriesContent() {
                     <Button
                       variant="outline"
                       size="sm"
+                      nativeButton={false}
                       render={<Link href={`/admin/categories/${category.id}/edit`}>Edit</Link>}
                     />
                     <AlertDialog>

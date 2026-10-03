@@ -29,6 +29,9 @@ export default function OrderDetailPage() {
     queryKey: ["order", id],
     queryFn: async () => (await apiClient.get<{ data: Order }>(`/orders/${id}`)).data.data,
     enabled: !!user,
+    // Shipment creation happens in a queued job right after payment —
+    // poll briefly so "paid" picks up "shipped" without a manual refresh.
+    refetchInterval: (query) => (query.state.data?.status === "paid" ? 2000 : false),
   });
 
   const pay = useMutation({

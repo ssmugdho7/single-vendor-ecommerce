@@ -98,7 +98,7 @@ export default function CartPage() {
 
       <div className="flex items-center justify-between border-t pt-4">
         <span className="text-xl font-semibold">Total: ${cart.total.toFixed(2)}</span>
-        <Button render={<Link href="/checkout">Proceed to checkout</Link>} />
+        <Button nativeButton={false} render={<Link href="/checkout">Proceed to checkout</Link>} />
       </div>
     </div>
   );

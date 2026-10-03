@@ -30,6 +30,9 @@ export default function AdminOrderDetailPage() {
   const { data: order, isLoading } = useQuery({
     queryKey: ["admin", "order", id],
     queryFn: async () => (await apiClient.get<{ data: Order }>(`/admin/orders/${id}`)).data.data,
+    // Shipment creation happens in a queued job right after payment —
+    // poll briefly so "paid" picks up "shipped" without a manual refresh.
+    refetchInterval: (query) => (query.state.data?.status === "paid" ? 2000 : false),
   });
 
   const cancelOrder = useMutation({
@@ -40,6 +43,16 @@ export default function AdminOrderDetailPage() {
       toast.success("Order cancelled");
     },
     onError: (error) => toast.error(extractErrorMessage(error, "Could not cancel order")),
+  });
+
+  const advanceDelivery = useMutation({
+    mutationFn: async (outcome: "transit" | "deliver" | "fail") =>
+      apiClient.post(`/deliveries/fake/${order!.delivery!.tracking_id}/${outcome}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "order", id] });
+      toast.success("Delivery status updated");
+    },
+    onError: (error) => toast.error(extractErrorMessage(error, "Could not update delivery")),
   });
 
   if (isLoading) {
@@ -120,9 +133,56 @@ export default function AdminOrderDetailPage() {
           <CardHeader>
             <CardTitle>Delivery</CardTitle>
           </CardHeader>
-          <CardContent className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">{order.delivery.tracking_id}</span>
-            <StatusBadge status={order.delivery.status} />
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">{order.delivery.tracking_id}</span>
+              <StatusBadge status={order.delivery.status} />
+            </div>
+
+            {order.delivery.status === "pickup_pending" && (
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  disabled={advanceDelivery.isPending}
+                  onClick={() => advanceDelivery.mutate("transit")}
+                >
+                  Mark in transit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={advanceDelivery.isPending}
+                  onClick={() => advanceDelivery.mutate("fail")}
+                >
+                  Mark failed
+                </Button>
+              </div>
+            )}
+
+            {order.delivery.status === "in_transit" && (
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  disabled={advanceDelivery.isPending}
+                  onClick={() => advanceDelivery.mutate("deliver")}
+                >
+                  Mark delivered
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={advanceDelivery.isPending}
+                  onClick={() => advanceDelivery.mutate("fail")}
+                >
+                  Mark failed
+                </Button>
+              </div>
+            )}
+
+            <p className="text-xs text-muted-foreground">
+              These buttons simulate CarryBee&apos;s webhook — a real integration would report
+              these transitions on its own.
+            </p>
           </CardContent>
         </Card>
       )}

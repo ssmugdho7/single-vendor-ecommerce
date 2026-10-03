@@ -80,6 +80,19 @@ class ProductTest extends TestCase
         $this->assertDatabaseHas('products', ['id' => $product->id, 'price' => 15.50]);
     }
 
+    public function test_updating_a_product_cannot_bypass_the_stock_ledger(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['is_admin' => true]));
+        $product = Product::factory()->create(['stock_quantity' => 10]);
+
+        $this->putJson("/api/admin/products/{$product->id}", [
+            'stock_quantity' => 9999,
+        ])->assertOk();
+
+        $this->assertDatabaseHas('products', ['id' => $product->id, 'stock_quantity' => 10]);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     public function test_admin_can_delete_product(): void
     {
         Sanctum::actingAs(User::factory()->create(['is_admin' => true]));

@@ -2,7 +2,7 @@
 
 import { Suspense, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,12 +15,17 @@ function FakePaymentContent() {
   const searchParams = useSearchParams();
   const orderId = searchParams.get("order");
   const [resolved, setResolved] = useState(false);
+  const queryClient = useQueryClient();
 
   const simulate = useMutation({
     mutationFn: async (outcome: "pay" | "cancel") =>
       apiClient.post(`/payments/fake/${transaction}/${outcome}`),
     onSuccess: (_response, outcome) => {
       setResolved(true);
+      if (orderId) {
+        queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+        queryClient.invalidateQueries({ queryKey: ["orders"] });
+      }
       toast[outcome === "pay" ? "success" : "error"](
         outcome === "pay" ? "Payment successful" : "Payment failed",
       );

@@ -147,19 +147,81 @@ panel (Next.js App Router, TanStack Query, shadcn/ui). Key decisions:
   `null`, not an all-null-fields object — so the frontend's
   `delivery: Delivery | null` type and `if (order.delivery)` checks are
   correct as written, no backend fix needed.
-- **No browser/e2e verification tool was available in this session.**
-  Verification was `npm run build` (type-checks + statically renders
-  every route), a real `Origin`-header `curl` check confirming CORS
-  actually works (not just assumed), and `curl`-based smoke tests
-  against every route for a 200 + absence of error markers with a real
-  backend running. This is not a substitute for clicking through the
-  app in an actual browser, which hasn't been done.
+- **Actually verified in a real headless browser** (Playwright,
+  installed as a scratch tool — not a project dependency), after first
+  relying only on `npm run build` + `curl` smoke tests and *believing*
+  no browser tool was available. A scripted walkthrough of both the
+  full customer flow (register → browse → cart → checkout → simulated
+  pay → watch the order reach `shipped` → admin advances delivery to
+  `delivered` → customer sees it) and the admin flow (login → create
+  category/product → restock → cancel/advance an order) caught two
+  real bugs that `npm run build`, `eslint`, and the backend's 82 passing
+  tests had all missed:
+  1. Every `<Button render={<Link .../>} />` usage (polymorphic button
+     rendering as a Next.js `Link`) logged a Base UI runtime warning —
+     `Button` defaults to `nativeButton: true`, which expects the
+     `render` target to be an actual `<button>`; needs
+     `nativeButton={false}` whenever it's rendering an anchor instead.
+     Fixed at all 6 call sites.
+  2. `/checkout/pay/[transaction]/page.tsx` never invalidated the
+     `['order', id]`/`['orders']` query cache after a simulated
+     payment, so a user bouncing back to the order page could see a
+     stale `pending_payment` badge until TanStack Query's own
+     background refetch caught up. Fixed by invalidating explicitly on
+     payment resolution, plus a short `refetchInterval` on the order
+     detail pages (both customer and admin) while status is `paid`, so
+     the `shipped` transition — which depends on a queued job, not the
+     request/response cycle — shows up without a manual page refresh.
 
 ## Trade-offs
-*(to be filled in as decisions are made)*
+
+Recurring theme across every phase: ship the real shape of the problem
+with a fake backing driver, rather than stubbing the shape itself.
+Payments and delivery are each a two-method contract
+(`initiate`/`verify`, `createShipment`/`verify`) with a `Fake*`
+implementation — swapping in SSLCommerz/CarryBee later is additive
+(new class + credentials), not a rewrite, because the *interface* was
+designed against the real integration's needs (a reference id to track,
+a webhook payload to verify) rather than against what was easy to fake.
+The cost: nobody has verified the real gateways actually fit this
+exact two-method shape, since no sandbox credentials were ever
+available to try against.
+
+Everywhere a "single mutation point" pattern appears
+(`Product::adjustStock()`, `PaymentService::handleCallback()`,
+`DeliveryService::createShipment()`/`handleStatusUpdate()`) the
+trade-off is the same: one more layer of indirection (callers can't
+just `Model::update()`) in exchange for a guarantee that an audit
+trail or a status transition can't be bypassed accidentally. Worth it
+here because every one of those methods has more than one caller.
+
+The frontend is entirely client-rendered rather than mixing Server
+Components for the public catalog with client components for
+interactive bits — one consistent pattern, at the cost of no SSR/SEO
+benefit for a storefront that would normally want it.
 
 ## Performance decisions
-*(to be filled in as decisions are made)*
+
+- Every order-bearing endpoint eager-loads its relations up front
+  (`items.product.category`, `payments`, `delivery`, `user` where
+  relevant) rather than letting `OrderResource` lazy-load per row —
+  the N+1 that `OrderResource`'s `whenLoaded()` calls would otherwise
+  produce across a paginated list is avoided at the query layer, not
+  papered over by eager-loading only sometimes.
+- Checkout and cancellation lock the specific product rows they touch
+  (`Product::query()->whereIn('id', ...)->lockForUpdate()`) rather than
+  locking the whole table or serializing checkout behind an
+  application-level mutex — concurrent checkouts for *different*
+  products never block each other.
+- Pagination defaults to Laravel's standard `paginate()` (15/page)
+  everywhere rather than returning unbounded collections, including on
+  endpoints (categories, admin stock movements) where the current
+  dataset is small enough that it wouldn't matter yet.
+- No caching layer (Redis is used for sessions/queue/cache driver
+  config, but no route/response actually caches anything). The catalog
+  is the obvious candidate if this went further — it's read far more
+  than it's written — but adding cache invalidation for a dataset this
+  small isn't paying for itself yet.
 
 ## Caching / queue / scheduler strategy
 
@@ -266,7 +328,27 @@ failure modes for a benefit (avoiding a checkout-time surprise) that
 has no stated requirement behind it.
 
 ## Error handling
-*(to be filled in as decisions are made)*
+
+- `bootstrap/app.php` forces JSON error responses for every `api/*`
+  request (`$exceptions->shouldRenderJsonWhen(...)`) from Phase 0
+  onward, so a validation failure, a 404, or an unhandled exception
+  always comes back as JSON the frontend can parse — never Laravel's
+  HTML error page, even in debug mode.
+- Validation errors are always Laravel's standard 422
+  `{message, errors: {field: [...]}}}` shape (Form Requests throughout,
+  never manual `response()->json(['error' => ...], 422)`), so the
+  frontend's single `extractFieldErrors()`/`extractErrorMessage()`
+  helpers (`frontend/src/lib/form-errors.ts`) work against every form
+  in the app without per-endpoint special-casing.
+- Business-rule failures that aren't field validation (checkout on an
+  empty cart, insufficient stock, paying for an already-paid order,
+  cancelling an already-cancelled order) are deliberately raised as
+  `ValidationException::withMessages([...])` too, rather than a bespoke
+  4xx shape — same reasoning: one error shape, one frontend handler.
+- Ownership/authorization failures are 403/404 depending on whether the
+  resource's existence is itself sensitive (e.g. a customer probing
+  another customer's order ID gets 404, not "403: not yours" — doesn't
+  confirm the order exists at all).
 
 ## Known limitations
 
@@ -288,4 +370,42 @@ has no stated requirement behind it.
   incompatible with the installed Next.js release, so it was left as-is.
 
 ## Production improvements
-*(to be filled in at the end)*
+
+What this project deliberately left for later, roughly in the order a
+real launch would need them:
+
+1. **Real payment/delivery credentials.** `FakePaymentGateway`/
+   `FakeDeliveryProvider` need real `SslcommerzPaymentGateway`/
+   `CarryBeeDeliveryProvider` implementations of the same contracts,
+   plus real webhook signature verification (`verify()` currently just
+   trusts its input — fine for a self-contained fake, not for a real
+   gateway's IPN).
+2. **Refunds and delivery retry.** A `paid` order has no path back to
+   a cancelled/refunded state, and a `delivery_failed` order has no
+   re-dispatch action — both explicitly out of scope so far (see
+   "Known limitations").
+3. **Email/SMS, for real.** `SendOrderConfirmation` logs instead of
+   sending; needs a real mail/SMS provider and probably a proper
+   notification class instead of a one-off job.
+4. **Product images.** `image_path` is a bare nullable string with no
+   upload endpoint, storage disk, or CDN — admin would currently have
+   to set it by hand via the API.
+5. **Rate limiting beyond the framework default.** `throttle:api`
+   applies globally; login/checkout specifically would want tighter,
+   purpose-specific limits.
+6. **Observability.** No structured logging, error tracking (Sentry et
+   al.), or metrics beyond Laravel's default log channel — fine for
+   local development, not for diagnosing a production incident.
+7. **CORS explicitly configured** rather than relying on Laravel's
+   unconfigured framework default (`allowed_origins: ['*']`) — fine for
+   local dev against `localhost:3000`, but a real deployment should
+   publish `config/cors.php` and scope it to the actual frontend
+   origin.
+8. **Horizontal scaling of the queue worker** — currently assumes one
+   `queue:work` process; fine today, but `CreateDeliveryShipment` and
+   `SendOrderConfirmation` have no particular ordering guarantee if run
+   across multiple workers, which has never been tested.
+9. **Real browser/E2E test coverage** committed to the repo (Playwright
+   or similar) — verification so far is backend feature tests (82
+   passing) plus manual browser walkthroughs run ad hoc during
+   development, not a repeatable suite.

@@ -57,7 +57,7 @@ function ProductsContent() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Products</h1>
-        <Button render={<Link href="/admin/products/new">New product</Link>} />
+        <Button nativeButton={false} render={<Link href="/admin/products/new">New product</Link>} />
       </div>
 
       {isLoading ? (
@@ -93,11 +93,13 @@ function ProductsContent() {
                     <Button
                       variant="outline"
                       size="sm"
+                      nativeButton={false}
                       render={<Link href={`/admin/products/${product.id}/stock`}>Stock</Link>}
                     />
                     <Button
                       variant="outline"
                       size="sm"
+                      nativeButton={false}
                       render={<Link href={`/admin/products/${product.id}/edit`}>Edit</Link>}
                     />
                     <AlertDialog>
