@@ -18,6 +18,11 @@ class OrderResource extends JsonResource
             'id' => $this->id,
             'status' => $this->status,
             'total_amount' => (float) $this->total_amount,
+            'user' => $this->when($this->relationLoaded('user'), fn () => [
+                'id' => $this->user->id,
+                'name' => $this->user->name,
+                'email' => $this->user->email,
+            ]),
             'items' => OrderItemResource::collection($this->whenLoaded('items')),
             'created_at' => $this->created_at,
         ];

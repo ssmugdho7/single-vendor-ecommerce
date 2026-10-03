@@ -3,10 +3,12 @@
 namespace App\Models;
 
 use App\Models\Concerns\HasSlug;
+use App\StockMovementType;
 use Database\Factories\ProductFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Product extends Model
 {
@@ -42,5 +44,22 @@ class Product extends Model
     public function category(): BelongsTo
     {
         return $this->belongsTo(Category::class);
+    }
+
+    public function stockMovements(): HasMany
+    {
+        return $this->hasMany(StockMovement::class);
+    }
+
+    public function adjustStock(int $delta, StockMovementType $type, ?Order $order = null, ?string $note = null): void
+    {
+        $this->increment('stock_quantity', $delta);
+
+        $this->stockMovements()->create([
+            'order_id' => $order?->id,
+            'type' => $type,
+            'quantity_change' => $delta,
+            'note' => $note,
+        ]);
     }
 }

@@ -6,6 +6,7 @@ use App\Models\Cart;
 use App\Models\CartItem;
 use App\Models\Product;
 use App\Models\User;
+use App\StockMovementType;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -43,6 +44,11 @@ class CheckoutTest extends TestCase
         $this->assertDatabaseHas('products', ['id' => $product->id, 'stock_quantity' => 7]);
         $this->assertDatabaseCount('cart_items', 0);
         $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseHas('stock_movements', [
+            'product_id' => $product->id,
+            'type' => StockMovementType::Sale,
+            'quantity_change' => -3,
+        ]);
     }
 
     public function test_checkout_rejects_insufficient_stock_without_creating_an_order(): void

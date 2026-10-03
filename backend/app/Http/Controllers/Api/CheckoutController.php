@@ -7,6 +7,7 @@ use App\Http\Resources\OrderResource;
 use App\Models\Cart;
 use App\Models\Order;
 use App\Models\Product;
+use App\StockMovementType;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -61,7 +62,7 @@ class CheckoutController extends Controller
                     'quantity' => $item->quantity,
                 ]);
 
-                $product->decrement('stock_quantity', $item->quantity);
+                $product->adjustStock(-$item->quantity, StockMovementType::Sale, $order);
             }
 
             $cart->items()->delete();

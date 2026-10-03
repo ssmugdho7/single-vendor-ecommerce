@@ -419,3 +419,105 @@ browse `/api/products` (no auth) → add to `/api/cart` → `POST
 /api/checkout` (201, stock decremented) → order appears in `GET
 /api/orders`. Full suite: `php artisan test --compact` → 50 passed.
 `vendor/bin/pint --dirty --format agent` clean.
+
+## Phase 3 — Inventory strategy
+
+Scope: an audit ledger for every stock change, an admin endpoint to
+restock/correct stock instead of blindly overwriting the counter, and
+minimal admin order visibility + a cancel action that restores stock.
+Cart-time behavior is unchanged (no reservation/hold step — checkout
+remains the sole point of stock authority, already race-safe via
+`lockForUpdate()`).
+
+### 3.1 Ledger + single mutation point
+
+```bash
+php artisan make:model StockMovement -mf --no-interaction
+php artisan make:enum StockMovementType --no-interaction
+```
+`make:enum` writes to `app/StockMovementType.php` (there's no
+`app/Enums/` directory in this project, so the generator defaults to
+the base `App` namespace — left as-is per the Boost guideline against
+introducing new base folders without approval). Backed string enum:
+`Sale`, `Restock`, `Correction`, `Cancellation`.
+
+`stock_movements`: `product_id` (FK cascadeOnDelete), `order_id`
+(nullable FK nullOnDelete — set for `sale`/`cancellation`, null for
+manual adjustments), `type`, `quantity_change` (signed int), `note`
+(nullable, admin-supplied).
+
+Added `Product::adjustStock(int $delta, StockMovementType $type,
+?Order $order = null, ?string $note = null)` — increments
+`stock_quantity` by `$delta` (negative decrements) and creates the
+matching `StockMovement` row. This is the **only** place
+`stock_quantity` is ever written outside a migration, used by all
+three call sites below, so the ledger can't drift from the counter.
+`CheckoutController::store()`'s old
+`$product->decrement('stock_quantity', $item->quantity)` became
+`$product->adjustStock(-$item->quantity, StockMovementType::Sale, $order)`.
+
+### 3.2 Admin stock adjustment + history
+
+```bash
+php artisan make:controller Api/Admin/StockMovementController --no-interaction
+php artisan make:request Admin/StoreStockMovementRequest --no-interaction
+php artisan make:resource StockMovementResource --no-interaction
+```
+`POST /api/admin/products/{product}/stock-movements` — body
+`{ type: 'restock'|'correction', quantity?, new_quantity?, note? }`.
+`restock` requires `quantity` (delta = +quantity); `correction`
+requires `new_quantity` (delta = `new_quantity - current
+stock_quantity`, can be negative) — validated with
+`required_if:type,restock` / `required_if:type,correction`. Only these
+two types are admin-triggerable here; `sale`/`cancellation` are never
+accepted as client input. `GET .../stock-movements` lists the
+product's history, newest first.
+
+### 3.3 Admin order visibility + cancellation
+
+```bash
+php artisan make:controller Api/Admin/OrderController --no-interaction
+```
+`GET /api/admin/orders` / `GET /api/admin/orders/{order}` — unlike the
+customer-facing `Api\OrderController`, no ownership restriction.
+`PATCH /api/admin/orders/{order}/cancel` — 422 unless
+`status === 'pending_payment'` (covers already-cancelled); otherwise,
+in a `DB::transaction()`, restores stock via `adjustStock($item->quantity,
+StockMovementType::Cancellation, $order, "Reversed for cancelled order
+#{$order->id}")` for each item whose product still exists (an item
+whose product was `nullOnDelete`'d has nothing to restore), then sets
+`status = 'cancelled'`.
+
+Reused the existing `OrderResource` (Boost: reuse before writing new)
+for both the customer and admin views — added a `user` field gated on
+`$this->when($this->relationLoaded('user'), ...)`, so it only appears
+when the admin controller's eager-load of `user` is present; the
+customer controller (which never loads `user`) is unaffected.
+
+### 3.4 Routes
+
+Added under the existing `/api/admin` group: `GET`/`POST
+products/{product}/stock-movements`, `GET orders`, `GET
+orders/{order}`, `PATCH orders/{order}/cancel`. Customer-facing and
+admin controllers both have classes named `OrderController`, so the
+admin import in `routes/api.php` is aliased (`AdminOrderController`),
+same pattern as the Phase 2 `Auth`/`Category`/`ProductController`
+aliases.
+
+### 3.5 Tests
+
+`tests/Feature/Admin/{StockMovementTest,OrderTest}.php` — restock/
+correction happy paths and validation, movement history listing,
+guest/non-admin rejection; admin list/show any order (not
+ownership-scoped), cancellation restores stock and logs a
+`cancellation` movement, cancelling an already-cancelled order is
+rejected. Extended `tests/Feature/CheckoutTest.php` with one assertion
+that a `sale` movement row exists after checkout.
+
+Verified end-to-end with `php artisan serve` + `curl`: admin restocks
+a product (`stock_quantity` increases, movement logged) → customer
+registers, adds to cart, checks out (`sale` movement logged) → admin
+cancels the order (`stock_quantity` restored, `cancellation` movement
+logged, order shows the customer's name). Full suite:
+`php artisan test --compact` → 64 passed. `vendor/bin/pint --dirty
+--format agent` clean.

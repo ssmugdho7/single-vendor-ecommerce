@@ -2,7 +2,9 @@
 
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\CategoryController as AdminCategoryController;
+use App\Http\Controllers\Api\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\Admin\ProductController as AdminProductController;
+use App\Http\Controllers\Api\Admin\StockMovementController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\CategoryController;
@@ -42,5 +44,12 @@ Route::prefix('admin')->group(function () {
 
         Route::apiResource('categories', AdminCategoryController::class);
         Route::apiResource('products', AdminProductController::class);
+
+        Route::get('products/{product}/stock-movements', [StockMovementController::class, 'index']);
+        Route::post('products/{product}/stock-movements', [StockMovementController::class, 'store']);
+
+        Route::get('orders', [AdminOrderController::class, 'index']);
+        Route::get('orders/{order}', [AdminOrderController::class, 'show']);
+        Route::patch('orders/{order}/cancel', [AdminOrderController::class, 'cancel']);
     });
 });

@@ -49,22 +49,26 @@ snapshotted at checkout time so later price changes don't rewrite history.
   are no public (non-admin) read endpoints yet — those belong to whichever
   phase builds the storefront.
 - `stock_quantity` on `products` is a plain on-hand integer count, not a
-  reservation/movement ledger — that's Phase 3's "Inventory strategy".
+  reservation system — there's no cart-time hold. It's backed by a
+  `stock_movements` audit ledger as of Phase 3 (see "Inventory strategy"
+  below), but the counter itself is still the only thing checkout
+  actually checks against.
 - Product images are a single nullable `image_path` string, not a
   gallery/variants table — the simplest thing that satisfies "core data"
   without building an unrequested image-management feature.
 - Checkout decrements `stock_quantity` synchronously inside the same
   transaction that creates the order (rows locked with `lockForUpdate()`
-  to prevent a race under concurrent checkouts) — there's no separate
-  reservation/hold step yet. That's deliberately deferred to Phase 3's
-  "Inventory strategy".
+  to prevent a race under concurrent checkouts) — there's still no
+  cart-time reservation/hold step (explicitly skipped, see "Inventory
+  strategy").
 - Order line items snapshot `unit_price` only, not the product's name —
   if a product is later renamed, historical orders show the new name via
   the (still-linked) product relation. Only deletion is guarded against
   (via `nullOnDelete`), not renaming.
-- Admin-side order visibility/management isn't built yet — there's no
-  `/api/admin/orders`. It's deferred to whichever phase handles payment
-  status transitions (Phase 4/5), rather than built speculatively now.
+- As of Phase 3, admins can list/view any order and cancel a
+  `pending_payment` one (restoring stock). There's still no status other
+  than `pending_payment`/`cancelled` — a `paid` transition and related
+  admin actions are deferred to Phase 4/5's payment integration.
 
 ## Trade-offs
 *(to be filled in as decisions are made)*
@@ -79,7 +83,35 @@ snapshotted at checkout time so later price changes don't rewrite history.
 *(to be filled in during Phase 4/5)*
 
 ## Inventory strategy
-*(to be filled in during Phase 3)*
+
+`stock_quantity` on `products` remains the single source of truth for
+"how much is available right now" (unchanged from Phase 2), but every
+change to it is now also logged to `stock_movements`: `type` (`sale`,
+`restock`, `correction`, `cancellation` — a backed `App\StockMovementType`
+enum), a signed `quantity_change`, an optional `order_id` (set for
+`sale`/`cancellation`, null for manual admin adjustments), and an
+optional admin-supplied `note`.
+
+**Single mutation point**: every call site that changes stock —
+checkout's decrement, an admin's manual restock/correction, an order
+cancellation's reversal — goes through `Product::adjustStock()` rather
+than touching `stock_quantity` directly. This guarantees the ledger
+can never drift out of sync with the counter, since there's exactly
+one place where the two are written together.
+
+`correction` (an admin setting stock to an absolute known value, e.g.
+after a physical recount) and `restock` (adding a known quantity) are
+the only two types an admin can trigger directly — `sale` and
+`cancellation` only ever happen as a side effect of checkout/order
+cancellation, never as a freeform type a client can pick.
+
+Cart-time behavior is **unchanged** from Phase 2 — adding to a cart
+does not reserve or hold stock. Stock is only authoritative-checked
+and mutated at checkout, inside a transaction with `lockForUpdate()`
+(already race-safe). A reservation-with-expiry system was considered
+and explicitly skipped: it adds a background-expiry job and more
+failure modes for a benefit (avoiding a checkout-time surprise) that
+has no stated requirement behind it.
 
 ## Error handling
 *(to be filled in as decisions are made)*
