@@ -281,3 +281,141 @@ passed. `vendor/bin/pint --dirty --format agent` clean.
 Fixed `backend/.env.example` to match the real `.env` (pgsql/redis for
 DB/session/queue/cache) — it had drifted to Laravel's sqlite/database
 stock defaults since Phase 0.
+
+## Phase 2 — Storefront browsing + customer auth + cart/orders
+
+Scope: browse the catalog without auth, register/log in as a customer,
+build a cart, and check out into an order (status `pending_payment` —
+no payment integration yet, that's Phase 4/5). Admin order
+visibility/management is explicitly out of scope here.
+
+### 2.1 Public catalog
+
+```bash
+php artisan make:controller Api/CategoryController --no-interaction
+php artisan make:controller Api/ProductController --no-interaction
+```
+Top-level (non-`Admin`) controllers reusing the existing
+`CategoryResource`/`ProductResource` as-is. `ProductController@index`
+filters to `is_active = true`, supports `?category=<slug>` (via
+`whereHas('category', ...)`) and `?search=<term>` (`LIKE` on name).
+Both `show` actions bind by slug at the route level
+(`{category:slug}`, `{product:slug}`) — Laravel's implicit slug
+binding, no model changes needed; the existing admin routes keep
+id-based binding untouched. `ProductController@show` 404s on an
+inactive product even though the slug exists.
+
+### 2.2 Customer auth
+
+```bash
+php artisan make:controller Api/AuthController --no-interaction
+php artisan make:request RegisterRequest --no-interaction
+php artisan make:request LoginRequest --no-interaction
+```
+Mirrors the Phase 1 admin pattern on the same `User`/`HasApiTokens`
+infrastructure — a customer is just a `User` with `is_admin = false`
+(the column's existing default), no model changes needed.
+`register` creates the user and returns `{ user, token }` with a 201
+(explicit `response()->json([...], 201)` — unlike `login`, there's no
+Eloquent-model-backed resource here to auto-201 via
+`wasRecentlyCreated`). `login`/`logout`/`me` mirror the admin versions
+minus the `is_admin` check.
+
+### 2.3 Cart
+
+```bash
+php artisan make:model Cart -mf --no-interaction
+php artisan make:model CartItem -mf --no-interaction
+```
+`carts` (`user_id` unique FK), `cart_items` (`cart_id` + `product_id`
+FKs, both cascade-delete, unique `(cart_id, product_id)` so adding an
+already-present product increments quantity instead of duplicating a
+row). `Cart::forUser(User $user)` (`firstOrCreate`) is shared by
+`CartController` and `CheckoutController`.
+
+**Gotcha**: Laravel's `JsonResource` auto-sets HTTP 201 whenever the
+wrapped model's `wasRecentlyCreated` is true. Since `Cart::forUser()`
+lazily creates the cart row on first touch, a plain `GET /api/cart` for
+a brand-new user was returning 201 instead of 200 — the lazy insert is
+an implementation detail the client never asked for. Fixed by resetting
+`$cart->wasRecentlyCreated = false` at the end of `forUser()`.
+
+`App\Http\Controllers\Api\CartController` (`auth:sanctum`): `show`,
+`addItem` (`AddCartItemRequest`: product must exist and be active),
+`updateItem`, `removeItem` — the latter two check
+`$cartItem->cart_id === Cart::forUser($request->user())->id` before
+acting, so a guessed `cartItem` id belonging to another user 404s
+rather than leaking/mutating it.
+
+### 2.4 Checkout + orders
+
+```bash
+php artisan make:model Order -mf --no-interaction
+php artisan make:model OrderItem -mf --no-interaction
+php artisan make:controller Api/CheckoutController --no-interaction
+php artisan make:controller Api/OrderController --no-interaction
+```
+`orders` (`user_id`, `status` default `pending_payment`,
+`total_amount`), `order_items` (`order_id` cascadeOnDelete,
+`product_id` **nullOnDelete** — a historical line survives a deleted
+product; `unit_price` snapshotted from `Product::price` at checkout
+time, `quantity`).
+
+`CheckoutController@store`: wraps in `DB::transaction()`, rejects an
+empty cart (422), locks the cart's products (`lockForUpdate()`),
+rejects if any line's quantity exceeds current `stock_quantity` (422,
+names the product, no partial order), then creates the `Order` +
+`OrderItem`s, decrements each product's `stock_quantity`, empties the
+cart, and returns the order with an explicit 201.
+
+`OrderController`: `index`/`show` scoped to
+`$request->user()->orders()` — `show` 404s if the order belongs to
+someone else.
+
+### 2.5 Routes
+
+Added to `routes/api.php` alongside the existing (untouched)
+`/api/admin/*` block: public `GET /categories`, `GET
+/categories/{category:slug}`, `GET /products`, `GET
+/products/{product:slug}`, `POST /register`, `POST /login`; behind
+`auth:sanctum`: `POST /logout`, `GET /me`, `GET /cart`, `POST
+/cart/items`, `PATCH|DELETE /cart/items/{cartItem}`, `POST /checkout`,
+`GET /orders`, `GET /orders/{order}`. Customer and admin controllers
+share class basenames (`AuthController`, `CategoryController`,
+`ProductController`), so the admin imports in `routes/api.php` are
+aliased (`AdminAuthController`, etc.) to avoid collisions.
+
+### 2.6 Tests
+
+`tests/Feature/{AuthTest,CatalogTest,CartTest,CheckoutTest,OrderTest}.php`
+— registration/login/logout, public browsing (filter/search/slug
+lookup, inactive products excluded), cart mutation + cross-user
+ownership rejection, checkout happy path + insufficient-stock rejection
+(no partial order), order list/show scoped to the owner.
+
+**Factory gotcha**: `CategoryFactory`/`ProductFactory` originally
+computed `slug` directly from a factory-generated fake `name` inside
+`definition()`. A test calling
+`Category::factory()->create(['name' => 'Electronics'])` only
+overrides the `name` key in the final attribute array — the `slug`
+already baked into `definition()`'s return value (from the *fake*
+name) survived untouched, so the row ended up named "Electronics" with
+some unrelated random slug. Fixed by removing `slug` from both
+factories entirely and letting `HasSlug`'s `creating` event (already
+wired up, and no longer skipped during seeding since Phase 1 dropped
+`WithoutModelEvents` from `DatabaseSeeder`) generate it from whatever
+`name` the row ends up with.
+
+**JSON float gotcha**: a couple of test assertions originally expected
+e.g. `75.0`/`20.0` for whole-number money totals. PHP's `json_encode`
+drops the trailing `.0` for a float with no fractional part unless
+`JSON_PRESERVE_ZERO_FRACTION` is passed (Laravel's JSON responses
+don't pass it), so `json_decode` on the client/test side gets back a
+plain int. Not an app bug — adjusted the affected assertions to expect
+the int.
+
+Verified end-to-end with `php artisan serve` + `curl`: register →
+browse `/api/products` (no auth) → add to `/api/cart` → `POST
+/api/checkout` (201, stock decremented) → order appears in `GET
+/api/orders`. Full suite: `php artisan test --compact` → 50 passed.
+`vendor/bin/pint --dirty --format agent` clean.

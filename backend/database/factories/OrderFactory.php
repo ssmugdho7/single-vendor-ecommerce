@@ -2,13 +2,14 @@
 
 namespace Database\Factories;
 
-use App\Models\Category;
+use App\Models\Order;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
- * @extends Factory<Category>
+ * @extends Factory<Order>
  */
-class CategoryFactory extends Factory
+class OrderFactory extends Factory
 {
     /**
      * Define the model's default state.
@@ -18,8 +19,9 @@ class CategoryFactory extends Factory
     public function definition(): array
     {
         return [
-            'name' => fake()->unique()->words(2, true),
-            'description' => fake()->sentence(),
+            'user_id' => User::factory(),
+            'status' => 'pending_payment',
+            'total_amount' => fake()->randomFloat(2, 10, 1000),
         ];
     }
 }
